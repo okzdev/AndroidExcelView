@@ -134,6 +134,7 @@ public class ExcelFragment extends Fragment {
                     Log.i(TAG, "newCount=" + newCount);
                 }
                 ImageView tv = (ImageView) convertView;
+                tv.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 Glide.with(tv).load("https://timgsa.baidu.com/timg?image&quality=80&size=b9999_10000&sec=1557473353600&di=bc560eeaeddeb821d7360e8c4e344675&imgtype=0&src=http%3A%2F%2Fimg2.ph.126.net%2F2zB3_wWPXlEW0RdwQa8d6A%3D%3D%2F2268688312388037455.jpg").into(tv);
                 return convertView;
             }
