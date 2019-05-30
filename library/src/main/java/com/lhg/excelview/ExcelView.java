@@ -29,20 +29,25 @@ public class ExcelView extends ViewGroup {
     private static final String TAG = "ExcelView";
     private final int mMinimumVelocity;
     private final int mMaximumVelocity;
-    final Layouter mLayouter = new Layouter();
+
+    boolean mIsLayouting = false;
+    final LayoutState mPreLayoutState = new LayoutState();
+    final LayoutState mVisibleState = new LayoutState();
+    final Map<Position, Cell> mVisibleCells = new HashMap<>();
     final Recycler mRecycler = new Recycler();
+
+    boolean mIsDragging = false;
     Scroller mScroller;
     int mTouchSlop;
     Point mLastMotion;
     VelocityTracker mVelocityTracker;
-    ExcelAdapter mAdapter;
-    boolean mIsLayouting = false;
-    boolean mIsDragging = false;
-    int dividerColor = Color.LTGRAY;
-    int dividerWidth = 2;
-    Paint dividerPaint = new Paint();
 
-    ScrollHelper mScrollHelperRow = new ScrollHelper() {
+    ExcelAdapter mAdapter;
+    int mDividerColor = Color.LTGRAY;
+    int mDividerWidth = 2;
+    Paint mDividerPaint = new Paint();
+
+    ScrollHelper mScrollHelperY = new ScrollHelper() {
         @Override
         public int getViewCount() {
             return mAdapter != null ? mAdapter.getRowCount():0;
@@ -53,7 +58,7 @@ public class ExcelView extends ViewGroup {
             return mAdapter.getRowHeight(index);
         }
     };
-    ScrollHelper mScrollHelperCol = new ScrollHelper() {
+    ScrollHelper mScrollHelperX = new ScrollHelper() {
         @Override
         public int getViewCount() {
             return mAdapter != null ? mAdapter.getColCount():0;
@@ -82,28 +87,30 @@ public class ExcelView extends ViewGroup {
         mTouchSlop = viewConfiguration.getScaledTouchSlop();
         mMinimumVelocity = viewConfiguration.getScaledMinimumFlingVelocity();
         mMaximumVelocity = viewConfiguration.getScaledMaximumFlingVelocity();
-        dividerPaint.setAntiAlias(true);
-        dividerPaint.setColor(dividerColor);
-        dividerPaint.setStrokeWidth(dividerWidth);
+        mDividerPaint.setAntiAlias(true);
+        mDividerPaint.setColor(mDividerColor);
+        mDividerPaint.setStrokeWidth(mDividerWidth);
     }
 
     public void setDividerWidth(int dividerWidth) {
-        this.dividerWidth = dividerWidth;
-        mLayouter.invalid();
-        dividerPaint.setStrokeWidth(dividerWidth);
+        this.mDividerWidth = dividerWidth;
+        mPreLayoutState.invalid = true;
+        mVisibleState.invalid = true;
+        mDividerPaint.setStrokeWidth(dividerWidth);
         requestLayout();
     }
 
     public void setDividerColor(int dividerColor) {
-        this.dividerColor = dividerColor;
-        dividerPaint.setColor(dividerColor);
+        this.mDividerColor = dividerColor;
+        mDividerPaint.setColor(dividerColor);
         invalidate();
     }
 
     private DataSetObserver mObserver = new DataSetObserver() {
         @Override
         public void onChanged() {
-            mLayouter.invalid();
+            mPreLayoutState.invalid = true;
+            mVisibleState.invalid = true;
             requestLayout();
         }
     };
@@ -120,7 +127,9 @@ public class ExcelView extends ViewGroup {
 
     public void setAdapter(ExcelAdapter adapter) {
         mRecycler.clear();
-        mLayouter.clear();
+        mVisibleCells.clear();
+        mVisibleState.init();
+        mPreLayoutState.init();
         removeAllViews();
 
         if (mAdapter != null) {
@@ -228,13 +237,13 @@ public class ExcelView extends ViewGroup {
     @Override
     public void scrollTo(int x, int y) {
         preLayoutAndAdjustScroll(x, y);
-        if (mLayouter.prelayout.scrollX != x || mLayouter.prelayout.scrollY != y) {
+        if (mPreLayoutState.scrollX != x || mPreLayoutState.scrollY != y) {
             //被调整了,取消接下来的滑动
             if (!mScroller.isFinished()) {
                 mScroller.forceFinished(true);
             }
         }
-        super.scrollTo(mLayouter.prelayout.scrollX, mLayouter.prelayout.scrollY);
+        super.scrollTo(mPreLayoutState.scrollX, mPreLayoutState.scrollY);
     }
 
     @Override
@@ -261,65 +270,64 @@ public class ExcelView extends ViewGroup {
     @Override
     protected void dispatchDraw(Canvas canvas) {
         super.dispatchDraw(canvas);
-        Cell cell = mLayouter.get(new Position(0,0));
+        Cell cell = mVisibleCells.get(new Position(0,0));
         if (cell == null) {
             return;
         }
-        LayoutState state = mLayouter.layout;
+        LayoutState state = mVisibleState;
 
         //画body
         canvas.save();
         canvas.clipRect(cell.w + state.scrollX, cell.h + state.scrollY,
                 state.scrollX + getWidth(), state.scrollY + getHeight());
-        for (Position pos : mLayouter.views.keySet()) {
+        for (Position pos : mVisibleCells.keySet()) {
             if (pos.col == 0 || pos.row == 0) {
                 continue;
             }
-            drawCellDivider(canvas, mLayouter.views.get(pos));
+            drawCellDivider(canvas, mVisibleCells.get(pos));
         }
         canvas.restore();
 
         //画header
-        for (Position pos : mLayouter.views.keySet()) {
+        for (Position pos : mVisibleCells.keySet()) {
             if (pos.col == 0 || pos.row == 0) {
-               drawCellDivider(canvas, mLayouter.views.get(pos));
+               drawCellDivider(canvas, mVisibleCells.get(pos));
             }
         }
     }
 
     private void drawCellDivider(Canvas canvas, Cell cell) {
         View v = cell.view;
-        float w = dividerWidth;
+        float w = mDividerWidth;
         //底部横线
-        canvas.drawLine(v.getLeft(), v.getBottom() + w / 2, v.getRight() + w, v.getBottom() + w / 2, dividerPaint);
+        canvas.drawLine(v.getLeft(), v.getBottom() + w / 2, v.getRight() + w, v.getBottom() + w / 2, mDividerPaint);
         //右侧竖线
-        canvas.drawLine(v.getRight() + w / 2, v.getTop(), v.getRight() + w / 2, v.getBottom() + dividerWidth, dividerPaint);
+        canvas.drawLine(v.getRight() + w / 2, v.getTop(), v.getRight() + w / 2, v.getBottom() + mDividerWidth, mDividerPaint);
     }
 
     //计算bodycell和调整scrollxy
     private void preLayoutAndAdjustScroll(int scrollX, int scrollY) {
         boolean layout = false;
-        LayoutState state = mLayouter.prelayout;
+        LayoutState state = mPreLayoutState;
         if (state.invalid || state.width != getWidth() || state.scrollX != scrollX) {
-            mScrollHelperCol.layout(state.firstBodyColX, state.firstBodyCol, getWidth(), state.scrollX, scrollX);
-            state.firstBodyCol = mScrollHelperCol.startIndex;
-            state.firstBodyColX = mScrollHelperCol.startOffset;
-            state.bodyColCount = mScrollHelperCol.bodyCount;
-            state.scrollX = mScrollHelperCol.scroll;
+            mScrollHelperX.scroll(state.firstBodyColOffset, state.firstBodyCol, getWidth(), state.scrollX, scrollX);
+            state.firstBodyCol = mScrollHelperX.startIndex;
+            state.firstBodyColOffset = mScrollHelperX.startOffset;
+            state.bodyColCount = mScrollHelperX.bodyCount;
+            state.scrollX = mScrollHelperX.scroll;
+            state.width = getWidth();
             layout = true;
         }
 
         if (state.invalid || state.height != getHeight() || state.scrollY != scrollY) {
-            mScrollHelperRow.layout(state.firstBodyRowY, state.firstBodyRow, getHeight(), state.scrollY, scrollY);
-            state.firstBodyRow = mScrollHelperRow.startIndex;
-            state.firstBodyRowY = mScrollHelperRow.startOffset;
-            state.bodyRowCount = mScrollHelperRow.bodyCount;
-            state.scrollY = mScrollHelperRow.scroll;
+            mScrollHelperY.scroll(state.firstBodyRowOffset, state.firstBodyRow, getHeight(), state.scrollY, scrollY);
+            state.firstBodyRow = mScrollHelperY.startIndex;
+            state.firstBodyRowOffset = mScrollHelperY.startOffset;
+            state.bodyRowCount = mScrollHelperY.bodyCount;
+            state.scrollY = mScrollHelperY.scroll;
+            state.height = getHeight();
             layout = true;
         }
-
-        state.width = getWidth();
-        state.height = getHeight();
         state.invalid = false;
         if (layout) {
             Log.i(TAG, "prelayout = " + state);
@@ -337,35 +345,35 @@ public class ExcelView extends ViewGroup {
         }
 
         preLayoutAndAdjustScroll(getScrollX(), getScrollY());
-        if (mLayouter.layout.equals(mLayouter.prelayout) && !mLayouter.layout.invalid) {
+        if (mVisibleState.equals(mPreLayoutState) && !mVisibleState.invalid) {
             return;
         }
 
-        mLayouter.layout.copy(mLayouter.prelayout);
-        Log.i(TAG, "layoutChildren " + mLayouter.layout);
+        mVisibleState.copyFrom(mPreLayoutState);
+        Log.i(TAG, "layoutChildren " + mVisibleState);
         mIsLayouting = true;
-        recycleCells();
-        LayoutState state = mLayouter.layout;
+        recycleCells();//TODO mVisibleState.invalid应该全部回收掉,
+        LayoutState state = mVisibleState;
 
         int firstRowHeight = mAdapter.getRowHeight(0);
         int firstColWidth = mAdapter.getColWidth(0);
-        int rowY = mLayouter.layout.scrollY - state.firstBodyRowY + firstRowHeight;
+        int rowY = mVisibleState.scrollY - state.firstBodyRowOffset + firstRowHeight;
         for (int row = state.firstBodyRow; row < state.firstBodyRow + state.bodyRowCount; row++) {
             layoutRow(firstColWidth, row, rowY);
             rowY += mAdapter.getRowHeight(row);
         }
         //head row
         layoutRow(firstColWidth, 0, state.scrollY);
-        mLayouter.layout.invalid = false;
+        mVisibleState.invalid = false;
         mIsLayouting = false;
         //排版完之后自动滚动,防止越界
-        scrollTo(mLayouter.layout.scrollX, mLayouter.layout.scrollY);
+        scrollTo(mVisibleState.scrollX, mVisibleState.scrollY);
     }
 
     //合并单元格需要改造layoutRow和recycleCells, 合并单元格只处理左上角
     private void layoutRow(final int firstColWidth, final int row, final int y) {
-        LayoutState state = mLayouter.layout;
-        int x = state.scrollX - state.firstBodyColX + firstColWidth;//内部起点
+        LayoutState state = mVisibleState;
+        int x = state.scrollX - state.firstBodyColOffset + firstColWidth;//内部起点
         int rowHeight = mAdapter.getRowHeight(row);
         for (int col = state.firstBodyCol; col < state.firstBodyCol + state.bodyColCount;) {
             Span span = mAdapter.querySpan(row, col);
@@ -399,20 +407,22 @@ public class ExcelView extends ViewGroup {
             }
         }
         //最左侧列
-        layoutCell(new Position(row, 0), state.scrollX, y, firstColWidth, rowHeight);
+        Cell cell = layoutCell(new Position(row, 0), state.scrollX, y, firstColWidth, rowHeight);
+        if (row == 0 && getChildAt(getChildCount()-1) != cell.view) {
+            bringChildToFront(cell.view);
+        }
     }
 
     private Cell layoutCell(Position pos, int x, int y, int w, int h) {
-        Cell cell = mLayouter.get(pos);
+        Cell cell = mVisibleCells.get(pos);
         boolean needLayout = false;
         if (cell == null) {
             int viewType = mAdapter.getCellViewType(pos.row, pos.col);
             View view = mRecycler.reuse(viewType);
             view = mAdapter.getCellView(getContext(), view, pos.row, pos.col);
-            cell = new Cell(view, viewType);
-            mLayouter.add(pos, cell);
+            mVisibleCells.put(pos, cell = new Cell(view, viewType));
             needLayout = true;
-        } else if (mLayouter.layout.invalid) {
+        } else if (mVisibleState.invalid) {
             cell.view = mAdapter.getCellView(getContext(), cell.view, pos.row, pos.col);
         }
 
@@ -426,13 +436,13 @@ public class ExcelView extends ViewGroup {
             throw new IllegalStateException("view.parent != this");
         }
 
-        if (cell.w != w || cell.h != h || cell.view.getWidth() != w - dividerWidth ||
-                cell.view.getHeight() != h - dividerWidth) {
+        if (cell.w != w || cell.h != h || cell.view.getWidth() != w - mDividerWidth ||
+                cell.view.getHeight() != h - mDividerWidth) {
             cell.w = w;
             cell.h = h;
             cell.view.measure(
-                    MeasureSpec.makeMeasureSpec(w - dividerWidth, MeasureSpec.EXACTLY),
-                    MeasureSpec.makeMeasureSpec(h - dividerWidth, MeasureSpec.EXACTLY)
+                    MeasureSpec.makeMeasureSpec(w - mDividerWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(h - mDividerWidth, MeasureSpec.EXACTLY)
             );
             needLayout = true;
         }
@@ -442,7 +452,7 @@ public class ExcelView extends ViewGroup {
             needLayout = true;
         }
         if (needLayout) {
-            cell.view.layout(x, y, x + w - dividerWidth, y + h - dividerWidth);
+            cell.view.layout(x, y, x + w - mDividerWidth, y + h - mDividerWidth);
             Log.i(TAG, "layoutCell " + pos);
         }
 
@@ -451,20 +461,22 @@ public class ExcelView extends ViewGroup {
 
 
     private void recycleAllCells() {
-        for (Position position : mLayouter.views.keySet()) {
-            Cell cell = mLayouter.views.get(position);
+        for (Position position : mVisibleCells.keySet()) {
+            Cell cell = mVisibleCells.get(position);
             mRecycler.recycle(cell.viewType, cell.view);
         }
         removeAllViews();
-        mLayouter.clear();
+        mVisibleCells.clear();
+        mVisibleState.init();
+        mPreLayoutState.init();
     }
 
     //合并单元格需要改造layoutRow和recycleCells
     private void recycleCells() {
-        LayoutState state = mLayouter.prelayout;
+        LayoutState state = mPreLayoutState;
         mRecycler.tmpPositions.clear();
-        for (Position position : mLayouter.views.keySet()) {
-            Cell cell = mLayouter.views.get(position);
+        for (Position position : mVisibleCells.keySet()) {
+            Cell cell = mVisibleCells.get(position);
             boolean cellVisible = state.isCellVisible(cell.lt.row, cell.lt.col);
             if (cell.rb != null && !cellVisible) {
                 cellVisible = state.isCellVisible(cell.rb.row, cell.rb.col);
@@ -475,7 +487,7 @@ public class ExcelView extends ViewGroup {
         }
 
         for (Position position : mRecycler.tmpPositions) {
-            Cell cell = mLayouter.remove(position);
+            Cell cell = mVisibleCells.remove(position);
             removeView(cell.view);
             mRecycler.recycle(cell.viewType, cell.view);
         }
@@ -576,11 +588,11 @@ public class ExcelView extends ViewGroup {
         int scrollX, scrollY;
         int width, height;
         int firstBodyRow = 0, firstBodyCol = 0;
-        int firstBodyRowY = 0, firstBodyColX = 0;//firstBodyRow被head挡住的部分, 为正数
+        int firstBodyRowOffset = 0, firstBodyColOffset = 0;//firstBodyRow被head挡住的部分, 为正数
         int bodyRowCount = 0, bodyColCount = 0;
         
         public boolean isCellVisible(int row, int col) {
-            boolean cellVisible = true;
+            boolean cellVisible;
             int bodyRowEnd = firstBodyRow + bodyRowCount;
             int bodyColEnd = firstBodyCol + bodyColCount;
             if (col == 0 && row == 0) {//左上角永不回收
@@ -606,8 +618,8 @@ public class ExcelView extends ViewGroup {
                     ", height=" + height +
                     ", firstBodyRow=" + firstBodyRow +
                     ", firstBodyCol=" + firstBodyCol +
-                    ", firstBodyRowY=" + firstBodyRowY +
-                    ", firstBodyColX=" + firstBodyColX +
+                    ", firstBodyRowOffset=" + firstBodyRowOffset +
+                    ", firstBodyColOffset=" + firstBodyColOffset +
                     ", bodyRowCount=" + bodyRowCount +
                     ", bodyColCount=" + bodyColCount +
                     '}';
@@ -620,8 +632,8 @@ public class ExcelView extends ViewGroup {
             firstBodyCol = 0;
             bodyRowCount = 0;
             bodyColCount = 0;
-            firstBodyRowY = 0;
-            firstBodyColX = 0;
+            firstBodyRowOffset = 0;
+            firstBodyColOffset = 0;
         }
 
         @Override
@@ -637,57 +649,50 @@ public class ExcelView extends ViewGroup {
             if (height != that.height) return false;
             if (firstBodyRow != that.firstBodyRow) return false;
             if (firstBodyCol != that.firstBodyCol) return false;
-            if (firstBodyRowY != that.firstBodyRowY) return false;
-            if (firstBodyColX != that.firstBodyColX) return false;
+            if (firstBodyRowOffset != that.firstBodyRowOffset) return false;
+            if (firstBodyColOffset != that.firstBodyColOffset) return false;
             if (bodyRowCount != that.bodyRowCount) return false;
             return bodyColCount == that.bodyColCount;
         }
         
-        public void copy(LayoutState that) {
+        public void copyFrom(LayoutState that) {
             scrollX = that.scrollX ;
             scrollY = that.scrollY ;
             width = that.width ;
             height = that.height ;
             firstBodyRow = that.firstBodyRow ;
             firstBodyCol = that.firstBodyCol ;
-            firstBodyRowY = that.firstBodyRowY ;
-            firstBodyColX = that.firstBodyColX ;
+            firstBodyRowOffset = that.firstBodyRowOffset;
+            firstBodyColOffset = that.firstBodyColOffset;
             bodyRowCount = that.bodyRowCount ;
             bodyColCount = that.bodyColCount;
         }
     }
 
-    private static class Layouter {
-        final Map<Position, Cell> views = new HashMap<>();
-        final LayoutState prelayout = new LayoutState();
-        final LayoutState layout = new LayoutState();
-
-        public void add(Position position, Cell cell) {
-            if (views.containsKey(position)) {
-                throw new IllegalStateException(position + " 已经有view");
-            }
-            views.put(position, cell);
-        }
-
-        public Cell remove(Position position) {
-            return views.remove(position);
-        }
-
-        public Cell get(Position position) {
-            return views.get(position);
-        }
-        
-        public void invalid() {
-            prelayout.invalid = true;
-            layout.invalid = true;
-        }
-
-        public void clear() {
-            prelayout.init();
-            layout.init();
-            views.clear();
-        }
-    }
+//    private static class Layouter {
+//        final Map<Position, Cell> cells = new HashMap<>();
+//        final LayoutState state = new LayoutState();
+//
+//        public void add(Position position, Cell cell) {
+//            if (cells.containsKey(position)) {
+//                throw new IllegalStateException(position + " 已经有cell");
+//            }
+//            cells.put(position, cell);
+//        }
+//
+//        public Cell remove(Position position) {
+//            return cells.remove(position);
+//        }
+//
+//        public Cell get(Position position) {
+//            return cells.get(position);
+//        }
+//        
+//        public void clear() {
+//            state.init();
+//            cells.clear();
+//        }
+//    }
 
     private static abstract class ScrollHelper {
         int startOffset;
@@ -698,7 +703,7 @@ public class ExcelView extends ViewGroup {
         public abstract int getViewCount();
         public abstract int getViewSize(int index);
 
-        public void layout(int _startOffset, int _startIndex, int visibleSize, int oldScroll, int newScroll) {
+        public void scroll(int _startOffset, int _startIndex, int visibleSize, int oldScroll, int newScroll) {
             this.startOffset = _startOffset;
             this.startIndex = _startIndex;
             this.scroll = oldScroll;
